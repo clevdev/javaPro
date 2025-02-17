@@ -2,6 +2,7 @@ package task3;
 
 import java.util.LinkedList;
 import java.util.Queue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /*
    Попробуйте реализовать собственный пул потоков. В качестве аргументов конструктора пулу передается
@@ -17,13 +18,13 @@ public class SimpleThreadPool {
     //private final int capacity;
     private final WorkerThread[] workerThreads;
     private final Queue<Runnable> taskQueue;
-    private volatile boolean isShutdown;
+    private final AtomicBoolean isShutdown;
 
     public SimpleThreadPool(int capacity) {
 
         this.workerThreads = new WorkerThread[capacity];
         this.taskQueue = new LinkedList<>();
-        this.isShutdown = false;
+        this.isShutdown = new AtomicBoolean(false);
 
         for (int i = 0; i < capacity; i++) {
             workerThreads[i] = new WorkerThread(i);
@@ -31,30 +32,36 @@ public class SimpleThreadPool {
         }
     }
 
-    public synchronized void execute(Runnable task) {
-        if (isShutdown) {
-            throw new IllegalStateException("ThreadPool is shut down and can't accept new tasks");
-        }
-        taskQueue.offer(task);
-        notifyAll();
-    }
-
-    public synchronized void shutdown() {
-        isShutdown = true;
-        notifyAll(); // пробуждаем всех ожидающих потоков
-    }
-
-    public synchronized void awaitTermination() throws InterruptedException {
-        while (!isAllTasksCompleted()) {
-            wait();
+    public void execute(Runnable task) {
+        synchronized (taskQueue) {
+            if (isShutdown.get()) {
+                throw new IllegalStateException("ThreadPool is shut down and can't accept new tasks");
+            }
+            taskQueue.offer(task);
+            taskQueue.notifyAll();
         }
     }
 
-    private synchronized boolean isAllTasksCompleted() {
+    public void shutdown() {
+        synchronized (taskQueue) {
+            isShutdown.getAndSet(true);
+            taskQueue.notifyAll(); // пробуждаем всех ожидающих потоков
+        }
+    }
+
+    public void awaitTermination() throws InterruptedException {
+        synchronized (taskQueue) {
+            while (!isAllTasksCompleted()) {
+                taskQueue.wait();
+            }
+        }
+    }
+
+    private boolean isAllTasksCompleted() {
         return taskQueue.isEmpty() && allWorkersIdle();
     }
 
-    private synchronized boolean allWorkersIdle() {
+    private boolean allWorkersIdle() {
         for (WorkerThread worker : workerThreads) {
             if (worker.isAlive() && worker.isWorking()) {
                 return false;
@@ -105,17 +112,17 @@ public class SimpleThreadPool {
             while (true) {
                 Runnable task;
 
-                synchronized (SimpleThreadPool.this) {
-                    if (isShutdown && taskQueue.isEmpty()) {
+                synchronized (SimpleThreadPool.this.taskQueue) {
+                    if (isShutdown.get() && taskQueue.isEmpty()) {
                         System.out.println("Worker while (true)" + workerNumber + " isShutdown ");
                         working = false;
-                        SimpleThreadPool.this.notify();
+                        SimpleThreadPool.this.taskQueue.notify();
                         return; // Завершаем поток, если пул завершен
                     }
                     while (taskQueue.isEmpty()) {
                         working = false;
                         try {
-                            SimpleThreadPool.this.wait(); // ждем новую задачу
+                            SimpleThreadPool.this.taskQueue.wait(); // ждем новую задачу
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt(); // восстанавливаем прерывание
                             return;
